@@ -1,6 +1,6 @@
 # Font Replacer
 
-![Font Replacer Icon](icon.png)
+<img src="icon.png" alt="Font Replacer Icon" width="200" height="200">
 
 # Batch change/replace fonts in your project either page or selection
 
