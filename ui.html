@@ -9,8 +9,7 @@
       padding: 0;
     }
 
-    html,
-    body {
+    html, body {
       height: 100%;
       font-family: "Arial Mono MT Pro", "Arial Mono", monospace;
       font-size: 10px;
@@ -48,6 +47,24 @@
       font-size: 9px;
       color: #666;
       flex-shrink: 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .clear-btn {
+      font-size: 8px;
+      color: #999;
+      cursor: pointer;
+      border: none;
+      background: none;
+      font-family: inherit;
+      text-transform: uppercase;
+      padding: 2px 4px;
+    }
+
+    .clear-btn:hover {
+      color: #000;
     }
 
     .panel-content {
@@ -148,6 +165,19 @@
       color: #900;
     }
 
+    .message.progress {
+      color: #666;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .message.progress {
+      animation: pulse 1s infinite;
+    }
+
     button {
       padding: 8px 16px;
       border: 1px solid #000;
@@ -179,6 +209,12 @@
       text-align: center;
       color: #999;
     }
+
+    .selection-count {
+      font-size: 8px;
+      color: #666;
+      margin-left: 4px;
+    }
   </style>
 </head>
 
@@ -191,11 +227,12 @@
     let selectionFonts = [];
     let allFonts = [];
     let hasSelection = false;
-    let selectedFrom = null;
+    let selectedFrom = new Set();
     let selectedTo = null;
     let searchQuery = '';
     let messageText = '';
     let messageType = '';
+    let isReplacing = false;
 
     function openLink(url) {
       parent.postMessage({ pluginMessage: { type: 'open-link', url } }, '*');
@@ -217,10 +254,16 @@
 
       const allList = filteredFonts.map(f => renderFontFamily(f, 'to')).join('');
 
+      const fromCount = selectedFrom.size;
+      const headerLeft = hasSelection ? 'Selection' : 'Page';
+
       app.innerHTML = `
         <div class="panels">
           <div class="panel">
-            <div class="panel-header">${hasSelection ? 'Selection' : 'Page'}</div>
+            <div class="panel-header">
+              <span>${headerLeft}${fromCount > 0 ? `<span class="selection-count">(${fromCount} selected)</span>` : ''}</span>
+              ${fromCount > 0 ? `<button class="clear-btn" id="clearFrom">Clear</button>` : ''}
+            </div>
             <div class="panel-content" id="fromPanel">
               ${selectionList}
             </div>
@@ -238,7 +281,7 @@
         <div class="footer">
           <a href="#" onclick="openLink('https://vetlesen.no'); return false;">made by jonas vetlesen</a>
           <div class="message ${messageType}">${messageText}</div>
-          <button id="replaceBtn" ${!selectedFrom || !selectedTo ? 'disabled' : ''}>Replace</button>
+          <button id="replaceBtn" ${selectedFrom.size === 0 || !selectedTo || isReplacing ? 'disabled' : ''}>${isReplacing ? 'Replacing...' : 'Replace'}</button>
         </div>
       `;
 
@@ -252,6 +295,14 @@
 
       document.getElementById('replaceBtn').addEventListener('click', handleReplace);
 
+      const clearBtn = document.getElementById('clearFrom');
+      if (clearBtn) {
+        clearBtn.addEventListener('click', () => {
+          selectedFrom.clear();
+          render();
+        });
+      }
+
       document.querySelectorAll('[data-action]').forEach(el => {
         el.addEventListener('click', handleStyleClick);
       });
@@ -260,7 +311,7 @@
     function renderFontFamily(font, type) {
       const styles = font.styles.map(style => {
         const key = `${font.family}::${style}`;
-        const selected = type === 'from' ? selectedFrom === key : selectedTo === key;
+        const selected = type === 'from' ? selectedFrom.has(key) : selectedTo === key;
         return `<span class="style-tag ${selected ? 'selected' : ''}" data-action="select-${type}" data-family="${escapeAttr(font.family)}" data-style="${escapeAttr(style)}">${style}</span>`;
       }).join('');
 
@@ -284,13 +335,19 @@
     }
 
     function handleStyleClick(e) {
+      if (isReplacing) return;
+      
       const action = e.target.dataset.action;
       const family = e.target.dataset.family;
       const style = e.target.dataset.style;
       const key = `${family}::${style}`;
 
       if (action === 'select-from') {
-        selectedFrom = selectedFrom === key ? null : key;
+        if (selectedFrom.has(key)) {
+          selectedFrom.delete(key);
+        } else {
+          selectedFrom.add(key);
+        }
       } else if (action === 'select-to') {
         selectedTo = selectedTo === key ? null : key;
       }
@@ -298,29 +355,27 @@
     }
 
     function handleReplace() {
-      if (!selectedFrom || !selectedTo) return;
+      if (selectedFrom.size === 0 || !selectedTo || isReplacing) return;
 
-      const [fromFamily, fromStyle] = selectedFrom.split('::');
+      const fromList = Array.from(selectedFrom).map(key => {
+        const [family, style] = key.split('::');
+        return { family, style };
+      });
+
       const [toFamily, toStyle] = selectedTo.split('::');
+
+      isReplacing = true;
+      messageText = 'Starting...';
+      messageType = 'progress';
+      render();
 
       parent.postMessage({
         pluginMessage: {
-          type: 'replace',
-          from: { family: fromFamily, style: fromStyle },
+          type: 'replace-batch',
+          fromList,
           to: { family: toFamily, style: toStyle }
         }
       }, '*');
-    }
-
-    function showMessage(text, type) {
-      messageText = text;
-      messageType = type;
-      render();
-      setTimeout(() => {
-        messageText = '';
-        messageType = '';
-        render();
-      }, 2500);
     }
 
     window.onmessage = (event) => {
@@ -336,18 +391,40 @@
       if (msg.type === 'selection-update') {
         selectionFonts = msg.selectionFonts;
         hasSelection = msg.hasSelection;
-        selectedFrom = null;
+        selectedFrom.clear();
+        render();
+      }
+
+      if (msg.type === 'progress') {
+        messageText = `${msg.message} (${msg.count})`;
+        messageType = 'progress';
         render();
       }
 
       if (msg.type === 'success') {
-        showMessage(msg.message, 'success');
-        selectedFrom = null;
+        isReplacing = false;
+        messageText = msg.message;
+        messageType = 'success';
+        selectedFrom.clear();
         selectedTo = null;
+        render();
+        setTimeout(() => {
+          messageText = '';
+          messageType = '';
+          render();
+        }, 3000);
       }
 
       if (msg.type === 'error') {
-        showMessage(msg.message, 'error');
+        isReplacing = false;
+        messageText = msg.message;
+        messageType = 'error';
+        render();
+        setTimeout(() => {
+          messageText = '';
+          messageType = '';
+          render();
+        }, 3000);
       }
     };
   </script>

@@ -51,8 +51,8 @@ async function getAllFigmaFonts() {
     .sort((a, b) => a.family.localeCompare(b.family));
 }
 
-// Replace fonts
-async function replaceFonts(nodes, fromFont, toFont) {
+// Replace fonts with progress reporting
+async function replaceFonts(nodes, fromFont, toFont, onProgress) {
   let replacedCount = 0;
 
   async function traverse(node) {
@@ -87,6 +87,7 @@ async function replaceFonts(nodes, fromFont, toFont) {
         await figma.loadFontAsync(toFont);
         textNode.setRangeFontName(range.start, range.end, toFont);
         replacedCount++;
+        if (onProgress) onProgress(replacedCount);
       }
     }
 
@@ -137,17 +138,41 @@ figma.on("selectionchange", () => {
 
 // Handle messages from UI
 figma.ui.onmessage = async (msg) => {
-  if (msg.type === "replace") {
-    const { from, to } = msg;
-    const fromFont = { family: from.family, style: from.style };
+  if (msg.type === "replace-batch") {
+    const { fromList, to } = msg;
     const toFont = { family: to.family, style: to.style };
-
+    
+    let totalReplaced = 0;
+    let currentFont = 0;
+    const totalFonts = fromList.length;
+    
     try {
       await figma.loadFontAsync(toFont);
-      const count = await replaceFonts(getNodes(), fromFont, toFont);
+      
+      for (const from of fromList) {
+        currentFont++;
+        const fromFont = { family: from.family, style: from.style };
+        
+        figma.ui.postMessage({
+          type: "progress",
+          message: `Replacing ${currentFont}/${totalFonts}: ${from.family} ${from.style}...`,
+          count: totalReplaced
+        });
+        
+        const count = await replaceFonts(getNodes(), fromFont, toFont, (c) => {
+          figma.ui.postMessage({
+            type: "progress",
+            message: `Replacing ${currentFont}/${totalFonts}: ${from.family} ${from.style}...`,
+            count: totalReplaced + c
+          });
+        });
+        
+        totalReplaced += count;
+      }
+      
       figma.ui.postMessage({
         type: "success",
-        message: `Replaced ${count} instance(s)`,
+        message: `Replaced ${totalReplaced} instance(s)`,
       });
 
       const selectionFonts = getFonts(getNodes());
@@ -167,7 +192,7 @@ figma.ui.onmessage = async (msg) => {
   if (msg.type === "cancel") {
     figma.closePlugin();
   }
-
+  
   if (msg.type === "open-link") {
     figma.openExternal(msg.url);
   }
